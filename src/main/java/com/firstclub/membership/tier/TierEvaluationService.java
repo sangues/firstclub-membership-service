@@ -45,18 +45,18 @@ public class TierEvaluationService {
             if (newRank == curRank) return;
             if (newRank < curRank && !allowDemotion) return; // promote-only mid-cycle
 
-            int prevEffective = sub.getEffectiveTier().getRank();
+            Tier prevEffective = sub.getEffectiveTier();
             sub.setEarnedTier(newEarned);
             sub.recomputeEffectiveTier();
             subscriptions.save(sub);
 
-            int nowEffective = sub.getEffectiveTier().getRank();
-            if (nowEffective > prevEffective)
-                subscriptionService.logMovement(user, rankName(prevEffective),
-                        sub.getEffectiveTier().getName(), MovementKind.EARNED_PROMOTION);
-            else if (nowEffective < prevEffective)
-                subscriptionService.logMovement(user, rankName(prevEffective),
-                        sub.getEffectiveTier().getName(), MovementKind.EARNED_DEMOTION);
+            Tier nowEffective = sub.getEffectiveTier();
+            if (nowEffective.getRank() > prevEffective.getRank())
+                subscriptionService.logMovement(user, prevEffective.getName(),
+                        nowEffective.getName(), MovementKind.EARNED_PROMOTION);
+            else if (nowEffective.getRank() < prevEffective.getRank())
+                subscriptionService.logMovement(user, prevEffective.getName(),
+                        nowEffective.getName(), MovementKind.EARNED_DEMOTION);
         }));
     }
 
@@ -69,10 +69,5 @@ public class TierEvaluationService {
             if (all) return tier;
         }
         return null;
-    }
-
-    private String rankName(int rank) {
-        return tiers.findAllByOrderByRankAsc().stream()
-                .filter(t -> t.getRank() == rank).map(Tier::getName).findFirst().orElse(null);
     }
 }

@@ -1,5 +1,6 @@
 package com.firstclub.membership.subscription;
 
+import com.firstclub.membership.subscription.dto.ChangeTierRequest;
 import com.firstclub.membership.subscription.dto.SubscribeRequest;
 import com.firstclub.membership.subscription.dto.SubscriptionResponse;
 import com.firstclub.membership.subscription.dto.MovementResponse;
@@ -27,13 +28,13 @@ public class SubscriptionController {
         return service.getCurrent(userId);
     }
 
-    @org.springframework.web.bind.annotation.PatchMapping("/tier")
+    @PatchMapping("/tier")
     public SubscriptionResponse changeTier(@PathVariable Long userId,
-            @jakarta.validation.Valid @RequestBody com.firstclub.membership.subscription.dto.ChangeTierRequest req) {
+                                           @Valid @RequestBody ChangeTierRequest req) {
         return service.changeTier(userId, req.targetTier());
     }
 
-    @org.springframework.web.bind.annotation.DeleteMapping
+    @DeleteMapping
     public SubscriptionResponse cancel(@PathVariable Long userId) {
         return service.cancel(userId);
     }
