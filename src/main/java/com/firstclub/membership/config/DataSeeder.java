@@ -1,6 +1,7 @@
 package com.firstclub.membership.config;
 
 import com.firstclub.membership.catalog.*;
+import com.firstclub.membership.tier.RuleType;
 import com.firstclub.membership.user.User;
 import com.firstclub.membership.user.UserRepository;
 import org.springframework.boot.ApplicationRunner;
@@ -17,15 +18,17 @@ public class DataSeeder implements ApplicationRunner {
     private final BenefitRepository benefits;
     private final TierBenefitRepository tierBenefits;
     private final UserRepository users;
+    private final EligibilityRuleRepository rules;
 
     public DataSeeder(MembershipPlanRepository plans, TierRepository tiers,
                       BenefitRepository benefits, TierBenefitRepository tierBenefits,
-                      UserRepository users) {
+                      UserRepository users, EligibilityRuleRepository rules) {
         this.plans = plans;
         this.tiers = tiers;
         this.benefits = benefits;
         this.tierBenefits = tierBenefits;
         this.users = users;
+        this.rules = rules;
     }
 
     @Override
@@ -64,6 +67,13 @@ public class DataSeeder implements ApplicationRunner {
             tierBenefits.save(new TierBenefit(null, platinum, deals, new HashMap<>()));
             tierBenefits.save(new TierBenefit(null, platinum, early, new HashMap<>()));
             tierBenefits.save(new TierBenefit(null, platinum, priority, new HashMap<>()));
+        }
+        if (rules.count() == 0) {
+            Tier gold = tiers.findByName("GOLD").orElseThrow();
+            Tier platinum = tiers.findByName("PLATINUM").orElseThrow();
+            rules.save(new EligibilityRule(null, gold, RuleType.ORDER_COUNT, new HashMap<>(Map.of("minOrders", "3"))));
+            rules.save(new EligibilityRule(null, platinum, RuleType.ORDER_COUNT, new HashMap<>(Map.of("minOrders", "5"))));
+            rules.save(new EligibilityRule(null, platinum, RuleType.ORDER_VALUE, new HashMap<>(Map.of("minMonthlyValue", "1000"))));
         }
     }
 }
