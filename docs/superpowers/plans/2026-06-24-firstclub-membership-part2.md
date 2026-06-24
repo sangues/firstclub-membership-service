@@ -2,6 +2,8 @@
 
 > Companion to `2026-06-24-firstclub-membership.md`. Same Global Constraints apply. Execute Tasks 1–3 first.
 
+> **Concurrency invariant (applies to every locked write method below — subscribe, changeTier, cancel, ingest, evaluate):** the per-user `StripedLock` must **enclose** the database transaction, never the reverse. Method-level `@Transactional` would (via the AOP proxy) start the transaction *outside* the lock and commit *after* the lock releases, leaving a window where the next thread acquires the lock and reads pre-commit state — defeating serialization. The fix used throughout: **no method-level `@Transactional` on locked writes**; instead `locks.withLock(userId, () -> tx.execute(status -> { ... }))` with a programmatic `TransactionTemplate`. The lock stays in the service layer (not the controller) so direct service calls in tests are serialized too. Read-only methods keep `@Transactional(readOnly = true)` and need no lock.
+
 ---
 
 ## Task 4: User & order-stats foundation + StripedLock
@@ -198,7 +200,7 @@ git commit -m "feat(user/order): user + order-stats entities, striped lock, seed
 ## Task 5: Subscription core — entity, state machine, payment, subscribe + get current
 
 **Files:**
-- Create: `subscription/SubscriptionStatus.java`, `subscription/Subscription.java`, `subscription/SubscriptionRepository.java`, `subscription/MovementKind.java`, `subscription/TierMovementLog.java`, `subscription/TierMovementLogRepository.java`, `subscription/payment/PaymentResult.java`, `subscription/payment/PaymentGateway.java`, `subscription/payment/MockPaymentGateway.java`, `subscription/SubscriptionService.java`, `subscription/SubscriptionController.java`, `subscription/dto/SubscribeRequest.java`, `subscription/dto/SubscriptionResponse.java`, `common/exception/*` (7 exceptions), `common/exception/GlobalExceptionHandler.java`
+- Create: `subscription/SubscriptionStatus.java`, `subscription/Subscription.java`, `subscription/SubscriptionRepository.java`, `subscription/MovementKind.java`, `subscription/TierMovementLog.java`, `subscription/TierMovementLogRepository.java`, `subscription/payment/PaymentResult.java`, `subscription/payment/PaymentGateway.java`, `subscription/payment/MockPaymentGateway.java`, `subscription/SubscriptionService.java`, `subscription/SubscriptionController.java`, `subscription/dto/SubscribeRequest.java`, `subscription/dto/SubscriptionResponse.java`, `common/exception/*` (7 exceptions), `common/exception/GlobalExceptionHandler.java`, `config/PersistenceConfig.java`
 - Test: `subscription/SubscriptionServiceTest.java`
 
 **Interfaces:**
@@ -342,6 +344,15 @@ public class GlobalExceptionHandler {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
     }
 
+    // @Version backstop: the striped lock serializes same-user writes on one node, so
+    // this is rare, but a multi-node deployment (or the read-only path) can still race.
+    // Map it to a clean, retryable 409 instead of a raw 500.
+    @ExceptionHandler(org.springframework.orm.ObjectOptimisticLockingFailureException.class)
+    public ProblemDetail concurrentModification(org.springframework.orm.ObjectOptimisticLockingFailureException e) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT,
+                "Concurrent modification detected; please retry");
+    }
+
     @ExceptionHandler(InvalidTierTransitionException.class)
     public ProblemDetail unprocessable(RuntimeException e) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage());
@@ -357,6 +368,25 @@ public class GlobalExceptionHandler {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
                 e.getBindingResult().getAllErrors().stream().findFirst()
                  .map(err -> err.getDefaultMessage()).orElse("Validation failed"));
+    }
+}
+```
+
+`config/PersistenceConfig.java` (provides the programmatic `TransactionTemplate` used by all locked writes):
+
+```java
+package com.firstclub.membership.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
+@Configuration
+public class PersistenceConfig {
+    @Bean
+    public TransactionTemplate transactionTemplate(PlatformTransactionManager tm) {
+        return new TransactionTemplate(tm);
     }
 }
 ```
@@ -588,6 +618,7 @@ import com.firstclub.membership.user.User;
 import com.firstclub.membership.user.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Duration;
 import java.time.Instant;
 
@@ -600,21 +631,23 @@ public class SubscriptionService {
     private final UserRepository users;
     private final PaymentGateway payment;
     private final StripedLock locks;
+    private final TransactionTemplate tx;
 
     public SubscriptionService(SubscriptionRepository subscriptions, TierMovementLogRepository movements,
                                MembershipPlanRepository plans, TierRepository tiers, UserRepository users,
-                               PaymentGateway payment, StripedLock locks) {
+                               PaymentGateway payment, StripedLock locks, TransactionTemplate tx) {
         this.subscriptions = subscriptions; this.movements = movements; this.plans = plans;
-        this.tiers = tiers; this.users = users; this.payment = payment; this.locks = locks;
+        this.tiers = tiers; this.users = users; this.payment = payment; this.locks = locks; this.tx = tx;
     }
 
-    @Transactional
+    // Lock ENCLOSES the transaction (withLock -> tx.execute); the idempotency check lives
+    // INSIDE the lock to avoid the TOCTOU window. No method-level @Transactional here.
     public SubscriptionResponse subscribe(Long userId, SubscribeRequest req, String idempotencyKey) {
-        if (idempotencyKey != null) {
-            var existing = subscriptions.findByIdempotencyKey(idempotencyKey);
-            if (existing.isPresent()) return SubscriptionResponse.from(existing.get());
-        }
-        return locks.withLock(userId, () -> {
+        return locks.withLock(userId, () -> tx.execute(status -> {
+            if (idempotencyKey != null) {
+                var existing = subscriptions.findByIdempotencyKey(idempotencyKey);
+                if (existing.isPresent()) return SubscriptionResponse.from(existing.get());
+            }
             User user = users.findById(userId)
                     .orElseThrow(() -> new UserNotFoundException("user " + userId));
             PlanType planType = parsePlanType(req.planType());
@@ -649,7 +682,7 @@ public class SubscriptionService {
             subscriptions.save(sub);
             logMovement(user, null, sub.getEffectiveTier().getName(), MovementKind.SUBSCRIBE);
             return SubscriptionResponse.from(sub);
-        });
+        }));
     }
 
     @Transactional(readOnly = true)
@@ -712,6 +745,7 @@ Expected: PASS — all four cases.
 ```bash
 git add src/main/java/com/firstclub/membership/subscription \
         src/main/java/com/firstclub/membership/common/exception \
+        src/main/java/com/firstclub/membership/config/PersistenceConfig.java \
         src/test/java/com/firstclub/membership/subscription/SubscriptionServiceTest.java
 git commit -m "feat(subscription): subscribe + state machine + payment + idempotency + audit base"
 ```
@@ -814,9 +848,8 @@ Expected: FAIL — `changeTier`/`cancel` not defined.
 Add to `subscription/SubscriptionService.java`:
 
 ```java
-@Transactional
 public SubscriptionResponse changeTier(Long userId, String targetTierName) {
-    return locks.withLock(userId, () -> {
+    return locks.withLock(userId, () -> tx.execute(status -> {
         Subscription sub = subscriptions.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE)
                 .orElseThrow(() -> new SubscriptionNotFoundException("no active subscription for user " + userId));
         Tier target = tiers.findByName(targetTierName)
@@ -838,12 +871,11 @@ public SubscriptionResponse changeTier(Long userId, String targetTierName) {
         subscriptions.save(sub);
         logMovement(sub.getUser(), previous.getName(), target.getName(), kind);
         return SubscriptionResponse.from(sub);
-    });
+    }));
 }
 
-@Transactional
 public SubscriptionResponse cancel(Long userId) {
-    return locks.withLock(userId, () -> {
+    return locks.withLock(userId, () -> tx.execute(status -> {
         Subscription sub = subscriptions.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE)
                 .orElseThrow(() -> new SubscriptionNotFoundException("no active subscription for user " + userId));
         if (!sub.getStatus().canTransitionTo(SubscriptionStatus.CANCELLED))
@@ -852,7 +884,7 @@ public SubscriptionResponse cancel(Long userId) {
         subscriptions.save(sub);
         logMovement(sub.getUser(), sub.getEffectiveTier().getName(), null, MovementKind.CANCEL);
         return SubscriptionResponse.from(sub);
-    });
+    }));
 }
 ```
 
@@ -1059,7 +1091,7 @@ import com.firstclub.membership.order.dto.OrderEventRequest;
 import com.firstclub.membership.user.User;
 import com.firstclub.membership.user.UserRepository;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Instant;
 import java.time.YearMonth;
 import java.time.ZoneOffset;
@@ -1071,16 +1103,19 @@ public class OrderEventService {
     private final UserRepository users;
     private final DomainEventPublisher events;
     private final StripedLock locks;
+    private final TransactionTemplate tx;
 
     public OrderEventService(OrderEventRepository orders, UserOrderStatsRepository stats,
-                             UserRepository users, DomainEventPublisher events, StripedLock locks) {
+                             UserRepository users, DomainEventPublisher events, StripedLock locks,
+                             TransactionTemplate tx) {
         this.orders = orders; this.stats = stats; this.users = users;
-        this.events = events; this.locks = locks;
+        this.events = events; this.locks = locks; this.tx = tx;
     }
 
-    @Transactional
+    // Lock ENCLOSES the transaction so the order row + stats commit before the lock
+    // releases; the after-commit event then fires for async tier evaluation.
     public void ingest(OrderEventRequest req) {
-        locks.withLock(req.userId(), () -> {
+        locks.withLock(req.userId(), () -> tx.executeWithoutResult(status -> {
             if (orders.existsByOrderId(req.orderId())) return; // idempotent no-op
             User user = users.findById(req.userId())
                     .orElseThrow(() -> new UserNotFoundException("user " + req.userId()));
@@ -1105,7 +1140,7 @@ public class OrderEventService {
             stats.save(s);
 
             events.publish(new OrderIngestedEvent(user.getId()));
-        });
+        }));
     }
 }
 ```
@@ -1365,7 +1400,7 @@ import com.firstclub.membership.order.UserOrderStatsRepository;
 import com.firstclub.membership.subscription.*;
 import com.firstclub.membership.user.User;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import java.util.*;
 
 @Service
@@ -1376,20 +1411,22 @@ public class TierEvaluationService {
     private final UserOrderStatsRepository stats;
     private final SubscriptionService subscriptionService;
     private final StripedLock locks;
+    private final TransactionTemplate tx;
     private final Map<RuleType, EligibilityEvaluator> evaluators = new EnumMap<>(RuleType.class);
 
     public TierEvaluationService(SubscriptionRepository subscriptions, TierRepository tiers,
                                  EligibilityRuleRepository rules, UserOrderStatsRepository stats,
                                  SubscriptionService subscriptionService, StripedLock locks,
-                                 List<EligibilityEvaluator> evaluatorBeans) {
+                                 TransactionTemplate tx, List<EligibilityEvaluator> evaluatorBeans) {
         this.subscriptions = subscriptions; this.tiers = tiers; this.rules = rules;
-        this.stats = stats; this.subscriptionService = subscriptionService; this.locks = locks;
+        this.stats = stats; this.subscriptionService = subscriptionService; this.locks = locks; this.tx = tx;
         for (EligibilityEvaluator e : evaluatorBeans) evaluators.put(e.ruleType(), e);
     }
 
-    @Transactional
+    // Lock ENCLOSES the transaction. Same StripedLock bean as subscribe/changeTier, so an
+    // async evaluation and a manual tier change for the same user serialize (no lost update).
     public void evaluate(Long userId, boolean allowDemotion) {
-        locks.withLock(userId, () -> {
+        locks.withLock(userId, () -> tx.executeWithoutResult(status -> {
             Subscription sub = subscriptions.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE).orElse(null);
             if (sub == null) return;
             User user = sub.getUser();
@@ -1413,7 +1450,7 @@ public class TierEvaluationService {
             else if (nowEffective < prevEffective)
                 subscriptionService.logMovement(user, rankName(prevEffective),
                         sub.getEffectiveTier().getName(), MovementKind.EARNED_DEMOTION);
-        });
+        }));
     }
 
     private Tier highestQualifyingTier(User user, UserOrderStats userStats) {

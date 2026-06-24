@@ -125,7 +125,7 @@ DTOs are distinct from entities; mapping happens in the service layer. Request b
 5. **Scheduled sweep** — a `@Scheduled` monthly job resets monthly aggregates, applies boundary demotions, and performs catch-up re-evaluation.
 6. **Subscription action idempotency** — a unique constraint enforces one `ACTIVE` subscription per user; subscribe/upgrade accept an `Idempotency-Key` (persisted and deduped) so a double-click or retry can't double-charge or double-subscribe. (Redis-backed keys are the multi-node swap; single-node uses the DB.)
 7. **Status state machine** — subscription transitions are guarded: only `PENDING → ACTIVE`, `ACTIVE → {EXPIRED, CANCELLED}`, etc. are permitted; invalid transitions throw. The `charge → activate` payment flow uses `PENDING` and flips to `ACTIVE` only after the mock gateway confirms.
-8. **Locking choice** — the eval/stats path uses per-user striped locks + optimistic `@Version`; the payment/activation transition takes a **pessimistic row lock** (`SELECT … FOR UPDATE`) on the subscription to serialize concurrent billing actions on the same user.
+8. **Lock encloses the transaction** — every locked write runs as `withLock(userId → transaction)`, never a method-level `@Transactional` *around* the lock (the AOP proxy would commit *after* releasing the lock, leaking pre-commit state to the next thread). Same-node, same-user writes — order ingest, manual upgrade/downgrade, async tier evaluation — therefore serialize on one striped lock; `@Version` is the cross-node backstop, and a concurrent-modification conflict surfaces as `409` rather than `500`. A pessimistic `SELECT … FOR UPDATE` is the equivalent DB-level mechanism for a multi-node deployment.
 
 ---
 
@@ -166,6 +166,7 @@ A central `@RestControllerAdvice` maps domain exceptions to proper HTTP statuses
 | `InvalidTierTransitionException` | 422 |
 | `InvalidSubscriptionStateException` | 409 |
 | duplicate idempotency key / in-flight request | 409 |
+| `ObjectOptimisticLockingFailureException` (concurrent modification) | 409 |
 | `PaymentFailedException` | 402 |
 | validation errors | 400 |
 
