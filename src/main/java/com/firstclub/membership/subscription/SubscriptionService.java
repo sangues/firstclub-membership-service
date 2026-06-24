@@ -5,6 +5,7 @@ import com.firstclub.membership.common.StripedLock;
 import com.firstclub.membership.common.exception.*;
 import com.firstclub.membership.subscription.dto.SubscribeRequest;
 import com.firstclub.membership.subscription.dto.SubscriptionResponse;
+import com.firstclub.membership.subscription.dto.MovementResponse;
 import com.firstclub.membership.subscription.payment.PaymentGateway;
 import com.firstclub.membership.subscription.payment.PaymentResult;
 import com.firstclub.membership.user.User;
@@ -14,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 
 @Service
 public class SubscriptionService {
@@ -126,6 +128,12 @@ public class SubscriptionService {
 
     public void logMovement(User user, String from, String to, MovementKind kind) {
         movements.save(new TierMovementLog(null, user, from, to, kind, Instant.now()));
+    }
+
+    @Transactional(readOnly = true)
+    public List<MovementResponse> history(Long userId) {
+        return movements.findByUserIdOrderByAtAsc(userId).stream()
+                .map(MovementResponse::from).toList();
     }
 
     private PlanType parsePlanType(String value) {

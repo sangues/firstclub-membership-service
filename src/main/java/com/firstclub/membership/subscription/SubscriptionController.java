@@ -2,9 +2,11 @@ package com.firstclub.membership.subscription;
 
 import com.firstclub.membership.subscription.dto.SubscribeRequest;
 import com.firstclub.membership.subscription.dto.SubscriptionResponse;
+import com.firstclub.membership.subscription.dto.MovementResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/users/{userId}/subscription")
@@ -34,5 +36,10 @@ public class SubscriptionController {
     @org.springframework.web.bind.annotation.DeleteMapping
     public SubscriptionResponse cancel(@PathVariable Long userId) {
         return service.cancel(userId);
+    }
+
+    @GetMapping("/history")
+    public List<MovementResponse> history(@PathVariable Long userId) {
+        return service.history(userId);
     }
 }
