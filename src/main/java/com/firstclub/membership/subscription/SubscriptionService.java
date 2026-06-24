@@ -78,6 +78,45 @@ public class SubscriptionService {
         }));
     }
 
+    public SubscriptionResponse changeTier(Long userId, String targetTierName) {
+        return locks.withLock(userId, () -> tx.execute(status -> {
+            Subscription sub = subscriptions.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE)
+                    .orElseThrow(() -> new SubscriptionNotFoundException("no active subscription for user " + userId));
+            Tier target = tiers.findByName(targetTierName)
+                    .orElseThrow(() -> new InvalidTierTransitionException("unknown tier " + targetTierName));
+            Tier previous = sub.getPurchasedTier();
+            if (target.getRank() == previous.getRank())
+                throw new InvalidTierTransitionException("already on tier " + targetTierName);
+
+            MovementKind kind;
+            if (target.getRank() > previous.getRank()) {
+                PaymentResult result = payment.charge(userId, sub.getPlan().getPrice(), null);
+                if (!result.success()) throw new PaymentFailedException("upgrade payment declined for user " + userId);
+                kind = MovementKind.UPGRADE;
+            } else {
+                kind = MovementKind.DOWNGRADE;
+            }
+            sub.setPurchasedTier(target);
+            sub.recomputeEffectiveTier();
+            subscriptions.save(sub);
+            logMovement(sub.getUser(), previous.getName(), target.getName(), kind);
+            return SubscriptionResponse.from(sub);
+        }));
+    }
+
+    public SubscriptionResponse cancel(Long userId) {
+        return locks.withLock(userId, () -> tx.execute(status -> {
+            Subscription sub = subscriptions.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE)
+                    .orElseThrow(() -> new SubscriptionNotFoundException("no active subscription for user " + userId));
+            if (!sub.getStatus().canTransitionTo(SubscriptionStatus.CANCELLED))
+                throw new InvalidSubscriptionStateException("cannot cancel from " + sub.getStatus());
+            sub.setStatus(SubscriptionStatus.CANCELLED);
+            subscriptions.save(sub);
+            logMovement(sub.getUser(), sub.getEffectiveTier().getName(), null, MovementKind.CANCEL);
+            return SubscriptionResponse.from(sub);
+        }));
+    }
+
     @Transactional(readOnly = true)
     public SubscriptionResponse getCurrent(Long userId) {
         Subscription sub = subscriptions.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE)
