@@ -1,6 +1,8 @@
 package com.firstclub.membership.config;
 
 import com.firstclub.membership.catalog.*;
+import com.firstclub.membership.user.User;
+import com.firstclub.membership.user.UserRepository;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.stereotype.Component;
@@ -14,17 +16,24 @@ public class DataSeeder implements ApplicationRunner {
     private final TierRepository tiers;
     private final BenefitRepository benefits;
     private final TierBenefitRepository tierBenefits;
+    private final UserRepository users;
 
     public DataSeeder(MembershipPlanRepository plans, TierRepository tiers,
-                      BenefitRepository benefits, TierBenefitRepository tierBenefits) {
+                      BenefitRepository benefits, TierBenefitRepository tierBenefits,
+                      UserRepository users) {
         this.plans = plans;
         this.tiers = tiers;
         this.benefits = benefits;
         this.tierBenefits = tierBenefits;
+        this.users = users;
     }
 
     @Override
     public void run(ApplicationArguments args) {
+        if (users.count() == 0) {
+            users.save(new User(null, "Alice", "STANDARD"));
+            users.save(new User(null, "Bob", "VIP"));
+        }
         if (plans.count() == 0) {
             plans.save(new MembershipPlan(null, PlanType.MONTHLY, new BigDecimal("199"), PlanType.MONTHLY.durationDays(), true));
             plans.save(new MembershipPlan(null, PlanType.QUARTERLY, new BigDecimal("499"), PlanType.QUARTERLY.durationDays(), true));
