@@ -8,6 +8,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import org.hamcrest.Matchers;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -28,5 +29,13 @@ class CatalogControllerTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$[0].name").value("SILVER"))
            .andExpect(jsonPath("$[2].name").value("PLATINUM"));
+    }
+
+    @Test
+    void platinumTierExposesDiscountFifteen() throws Exception {
+        mvc.perform(get("/api/tiers"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[2].name").value("PLATINUM"))
+           .andExpect(jsonPath("$[2].benefits[?(@.type=='PERCENT_DISCOUNT')].params.discountPercent").value(Matchers.hasItem("15")));
     }
 }

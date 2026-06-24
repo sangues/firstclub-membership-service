@@ -1,5 +1,6 @@
 package com.firstclub.membership.catalog;
 
+import com.firstclub.membership.catalog.dto.BenefitResponse;
 import com.firstclub.membership.catalog.dto.PlanResponse;
 import com.firstclub.membership.catalog.dto.TierResponse;
 import org.springframework.web.bind.annotation.*;
@@ -16,4 +17,7 @@ public class CatalogController {
 
     @GetMapping("/tiers")
     public List<TierResponse> tiers() { return catalog.listTiers(); }
+
+    @GetMapping("/benefits")
+    public List<BenefitResponse> benefits() { return catalog.listBenefits(); }
 }
